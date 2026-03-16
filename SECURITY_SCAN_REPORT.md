@@ -17,7 +17,8 @@ This is an educational project teaching AI agent architecture. It is **not inten
 | XSS (Cross-Site Scripting) | dangerouslySetInnerHTML without sanitization | LOW |
 | Secrets / Credentials | No hardcoded secrets found | PASS |
 | Dependency Vulnerabilities | npm audit: 0 vulnerabilities | PASS |
-| Path Traversal | No user-controlled file paths | PASS |
+| Path Traversal (minimal-agent.py) | Missing `safe_path()` in template | MEDIUM |
+| Path Traversal (MessageBus) | Unsanitized `to` param in inbox path | LOW |
 | Configuration Security | Proper .gitignore, no sensitive files | PASS |
 
 ---
@@ -79,7 +80,50 @@ import rehypeSanitize from "rehype-sanitize";
 
 ---
 
-### 3. Secrets and Credentials — PASS
+### 3. Path Traversal in `minimal-agent.py` Template — MEDIUM
+
+**Affected file:**
+- `skills/agent-builder/references/minimal-agent.py:79-92`
+
+**Description:** The `minimal-agent.py` reference template uses `WORKDIR / args["path"]` directly for `read_file` and `write_file` tools without any path validation. Unlike all main agent files (s02-s12, s_full) which include a `safe_path()` function that resolves and validates paths stay within the working directory, this template lacks that protection.
+
+**Example exploit:** An LLM tool call with `{"path": "../../etc/passwd"}` would read files outside the working directory.
+
+**Risk assessment:** MEDIUM — Users may copy this template as a starting point for their own agents, inheriting the vulnerability.
+
+**Recommendation:** Add `safe_path()` validation matching the pattern used in other agent files:
+```python
+def safe_path(p: str) -> Path:
+    resolved = (WORKDIR / p).resolve()
+    if not str(resolved).startswith(str(WORKDIR.resolve())):
+        raise ValueError(f"Path escapes working directory: {p}")
+    return resolved
+```
+
+---
+
+### 4. Path Traversal in `MessageBus.send()` — LOW
+
+**Affected files:**
+- `agents/s09_agent_teams.py:94` — `self.dir / f"{to}.jsonl"`
+- `agents/s10_team_protocols.py:104`
+- `agents/s11_autonomous_agents.py:97`
+- `agents/s_full.py:373`
+
+**Description:** The `MessageBus.send()` method constructs file paths using the `to` parameter (teammate name) without sanitization. If the LLM generates a tool call with `to` set to `"../../etc/evil"`, it would write a `.jsonl` file outside the intended inbox directory.
+
+**Risk assessment:** LOW — The `to` parameter comes from the LLM, and teammate names are typically constrained by the team configuration. However, there is no enforcement at the `MessageBus` level.
+
+**Recommendation:** Validate that teammate names contain only alphanumeric characters and underscores:
+```python
+import re
+if not re.match(r'^[a-zA-Z0-9_]+$', to):
+    return f"Error: Invalid recipient name '{to}'"
+```
+
+---
+
+### 5. Secrets and Credentials — PASS
 
 - `.env.example` contains only placeholder values (`sk-ant-xxx`)
 - No actual `.env` file is committed to the repository
@@ -89,7 +133,7 @@ import rehypeSanitize from "rehype-sanitize";
 
 ---
 
-### 4. Dependency Vulnerabilities — PASS
+### 6. Dependency Vulnerabilities — PASS
 
 - **npm audit:** 0 vulnerabilities found
 - **Python dependencies:** Only 2 packages (`anthropic>=0.25.0`, `python-dotenv>=1.0.0`), both well-maintained
@@ -97,7 +141,7 @@ import rehypeSanitize from "rehype-sanitize";
 
 ---
 
-### 5. Configuration Security — PASS
+### 7. Configuration Security — PASS
 
 - `.gitignore` is comprehensive (excludes `.env`, `node_modules`, build artifacts, task outputs)
 - GitHub Actions CI (`ci.yml`, `test.yml`) uses pinned Node 20 and Python 3.11
@@ -106,7 +150,7 @@ import rehypeSanitize from "rehype-sanitize";
 
 ---
 
-### 6. Additional Observations
+### 8. Additional Observations
 
 | Item | Status |
 |------|--------|
@@ -125,5 +169,7 @@ This project is **safe for its intended purpose** as an educational resource. Th
 
 **Key recommendations:**
 1. Run AI agents only in sandboxed environments (Docker, VMs)
-2. Consider adding `rehype-sanitize` to the markdown pipeline as defense-in-depth
-3. Improve the command blocklist or replace it with a proper allowlist/sandbox approach in production scenarios
+2. Add `safe_path()` validation to the `minimal-agent.py` template to match other agent files
+3. Sanitize teammate names in `MessageBus.send()` to prevent path traversal
+4. Consider adding `rehype-sanitize` to the markdown pipeline as defense-in-depth
+5. Improve the command blocklist or replace it with a proper allowlist/sandbox approach in production scenarios
